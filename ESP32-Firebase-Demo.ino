@@ -24,9 +24,15 @@ FirebaseConfig config;
 unsigned long sendDataPrevMillis = 0;
 
 const int ledPin = 4;
+const int tempPin = 34; // Analog pin for B3950
+const int tdsPin = 35;  // Analog pin for TDS sensor
 
-void setup()
-{
+float tempThresholdLow = 20.0;  // Example: Minimum temperature for "okay"
+float tempThresholdHigh = 30.0; // Example: Maximum temperature for "okay"
+float tdsThresholdLow = 300;    // Example: Minimum TDS for "okay"
+float tdsThresholdHigh = 700;   // Example: Maximum TDS for "okay"
+
+void setup() {
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
@@ -34,8 +40,7 @@ void setup()
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   Serial.print("Connecting to Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED)
-  {
+  while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(300);
   }
@@ -54,35 +59,75 @@ void setup()
   /* Assign the RTDB URL (required) */
   config.database_url = DATABASE_URL;
 
-  // Comment or pass false value when WiFi reconnection will control by your code or third party library e.g. WiFiManager
   Firebase.reconnectNetwork(true);
-
-  // Since v4.4.x, BearSSL engine was used, the SSL buffer need to be set.
-  // Large data transmission may require larger RX buffer, otherwise connection issue or data read time out can be occurred.
-  fbdo.setBSSLBufferSize(4096 /* Rx buffer size in bytes from 512 - 16384 */, 1024 /* Tx buffer size in bytes from 512 - 16384 */);
-
-  // Limit the size of response payload to be collected in FirebaseData
+  fbdo.setBSSLBufferSize(4096, 1024);
   fbdo.setResponseSize(2048);
-
   Firebase.begin(&config, &auth);
-
   Firebase.setDoubleDigits(5);
-
   config.timeout.serverResponse = 10 * 1000;
 }
 
-void loop()
-{
+void loop() {
   // Firebase.ready() should be called repeatedly to handle authentication tasks.
-  if (Firebase.ready() && (millis() - sendDataPrevMillis > 1000 || sendDataPrevMillis == 0))
-  {
+  if (Firebase.ready() && (millis() - sendDataPrevMillis > 1000 || sendDataPrevMillis == 0)) {
     sendDataPrevMillis = millis();
 
-  int ledState;
-   if(Firebase.RTDB.getInt(&fbdo, "/led/state", &ledState)){
-    digitalWrite(ledPin, ledState);
-   }else{
-    Serial.println(fbdo.errorReason().c_str());
-   }
+    // Update LED state
+    int ledState;
+    if (Firebase.RTDB.getInt(&fbdo, "/led/state", &ledState)) {
+      digitalWrite(ledPin, ledState);
+    } else {
+      Serial.println(fbdo.errorReason().c_str());
+    }
+
+    // Read temperature sensor
+    float temperature = readTemperature();
+    int tempState = evaluateState(temperature, tempThresholdLow, tempThresholdHigh);
+    if (!Firebase.RTDB.setInt(&fbdo, "/temp/state", tempState)) {
+      Serial.println(fbdo.errorReason().c_str());
+    } else {
+      Serial.print("Temperature: ");
+      Serial.print(temperature);
+      Serial.print(" °C, State: ");
+      Serial.println(tempState);
+    }
+
+    // Read TDS sensor
+    float tdsValue = readTDS();
+    int tdsState = evaluateState(tdsValue, tdsThresholdLow, tdsThresholdHigh);
+    if (!Firebase.RTDB.setInt(&fbdo, "/quality/state", tdsState)) {
+      Serial.println(fbdo.errorReason().c_str());
+    } else {
+      Serial.print("TDS: ");
+      Serial.print(tdsValue);
+      Serial.print(" ppm, State: ");
+      Serial.println(tdsState);
+    }
   }
+}
+
+float readTemperature() {
+  // Simulate reading the temperature sensor
+  int analogValue = analogRead(tempPin);
+  float voltage = analogValue * (3.3 / 4095.0); // Convert to voltage
+  float resistance = (10.0 * voltage) / (3.3 - voltage); // Assume 10k pull-up
+  float tempCelsius = 1.0 / (log(resistance / 10.0) / 3950 + 1.0 / 298.15) - 273.15;
+  return tempCelsius;
+}
+
+float readTDS() {
+  // Simulate reading the TDS sensor
+  int analogValue = analogRead(tdsPin);
+  float voltage = analogValue * (3.3 / 4095.0); // Convert to voltage
+  float tds = (voltage / 3.3) * 1000; // Scale TDS based on sensor calibration
+  return tds;
+}
+
+int evaluateState(float value, float low, float high) {
+  if (value < low) {
+    return 0; // Too low
+  } else if (value > high) {
+    return 2; // Too high
+  }
+  return 1; // Okay
 }
